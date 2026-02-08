@@ -16,3 +16,7 @@ Data.gov.in API resource:
 ## API Notes
 - Use filters like `filters[year]`, `filters[month]`, `filters[StateName]`.
 - Pagination uses `offset` and `limit`.
+
+## Streamlit Sample
+- `data/derived/kcc_merged_2024_2025_sample.csv` is a 100k-row reservoir sample for Streamlit Community Cloud.
+- The app prefers the sample when present to avoid downloading the full 2024-2025 dataset.

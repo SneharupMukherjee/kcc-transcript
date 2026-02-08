@@ -4,3 +4,4 @@ config/kcc.env
 __pycache__/
 data/
 data/**
+!data/derived/kcc_merged_2024_2025_sample.csv
