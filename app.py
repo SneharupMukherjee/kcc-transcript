@@ -178,19 +178,17 @@ def render_percent_pie(data: pd.DataFrame, label_col: str = "label", value_col: 
         st.info("No data available.")
         return
     df["percent"] = df[value_col] / total
-    df["percent_label"] = (df["percent"] * 100).round(1).astype(str) + "%"
-    df["show_label"] = df["percent"] >= 0.06
     pie_colors = [
-        "#ffc27a",
-        "#ffb464",
-        "#ffa34b",
-        "#ff9333",
-        "#ff8320",
-        "#f47a1a",
-        "#e66f14",
-        "#d9650f",
-        "#cc5b0a",
-        "#bf5106",
+        "#f7c59f",
+        "#f3b07a",
+        "#ee9b51",
+        "#e8832a",
+        "#d96b1f",
+        "#bf5b19",
+        "#a64a16",
+        "#8a3b13",
+        "#6f2f11",
+        "#55260f",
     ]
     base = (
         alt.Chart(df)
@@ -206,11 +204,8 @@ def render_percent_pie(data: pd.DataFrame, label_col: str = "label", value_col: 
         .properties(height=320)
     )
     pie = base.mark_arc(innerRadius=30, outerRadius=120)
-    labels = base.mark_text(radius=140, size=11, color="#f7f7f7").encode(
-        text=alt.condition(alt.datum.show_label, "percent_label:N", alt.value(""))
-    )
     chart = (
-        (pie + labels)
+        pie
         .configure_view(strokeOpacity=0)
         .properties(background=PLOT_BG)
     )
@@ -324,7 +319,7 @@ map_left, map_right = st.columns(2)
 
 with map_left:
     st.caption("District Query Volume")
-    district_geojson_path = Path("/home/sneharup/KCC/apt/data/derived/india_districts.geojson")
+    district_geojson_path = BASE_DIR / "data" / "derived" / "india_districts.geojson"
     if district_geojson_path.exists():
         district_geojson = json.loads(district_geojson_path.read_text(encoding="utf-8"))
         district_counts = (
@@ -377,11 +372,11 @@ with map_left:
         p2.add_layout(cb2, "right")
         st.bokeh_chart(p2, use_container_width=True)
     else:
-        st.info("Add /home/sneharup/KCC/apt/data/derived/india_districts.geojson to enable district map.")
+        st.info("Add data/derived/india_districts.geojson to enable district map.")
 
 with map_right:
     st.caption("State Query Volume")
-    geojson_path = Path("/home/sneharup/KCC/apt/data/derived/india_states.geojson")
+    geojson_path = BASE_DIR / "data" / "derived" / "india_states.geojson"
     if geojson_path.exists():
         geojson = json.loads(geojson_path.read_text(encoding="utf-8"))
         state_counts = filtered["StateName"].value_counts().reset_index()
@@ -424,7 +419,7 @@ with map_right:
         p.add_layout(cb, "right")
         st.bokeh_chart(p, use_container_width=True)
     else:
-        st.info("Add /home/sneharup/KCC/apt/data/derived/india_states.geojson to enable the state map.")
+        st.info("Add data/derived/india_states.geojson to enable the state map.")
 
 st.subheader("Top Segments")
 row1_a, row1_b = st.columns(2)
