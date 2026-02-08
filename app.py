@@ -12,8 +12,9 @@ from huggingface_hub import hf_hub_download
 
 st.set_page_config(page_title="KCC Unified Explorer (2024-2025)", layout="wide")
 
-DATA_PATH = Path("/home/sneharup/KCC/apt/data/kcc_merged_2024_2025.csv")
-ENV_PATH = Path("/home/sneharup/KCC/apt/config/kcc.env")
+BASE_DIR = Path(__file__).resolve().parent
+DATA_PATH = BASE_DIR / "data" / "kcc_merged_2024_2025.csv"
+ENV_PATH = BASE_DIR / "config" / "kcc.env"
 HF_DATASET_REPO = "D3m1-g0d/kcc-24-25"
 HF_DATASET_FILE = "kcc_merged_2024_2025.csv"
 APP_BG = "#050505"
