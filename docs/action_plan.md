@@ -1,0 +1,28 @@
+# Uttar Pradesh: Districts With Top Crop as Wheat (Excluding Others)
+
+| District | Call Volume | No. of Wheat Query |
+|---|---:|---:|
+| HARDOI | 20331 | 3621 |
+| KANPUR DEHAT | 18958 | 4094 |
+| ETAH | 18358 | 3968 |
+| LALITPUR | 18280 | 3043 |
+| MAINPURI | 17125 | 3381 |
+| MATHURA | 16571 | 3481 |
+| MORADABAD | 13814 | 2745 |
+| AGRA | 13353 | 1697 |
+| KANNAUJ | 12888 | 2202 |
+| JALAUN | 12393 | 2555 |
+| UNNAO | 12211 | 2453 |
+| KANSHIRAM NAGAR | 10626 | 1454 |
+| FIROZABAD | 10488 | 1965 |
+| ETAWAH | 9241 | 2044 |
+| HAMIRPUR | 9172 | 1828 |
+| KANPUR CITY | 8655 | 1326 |
+| AURAIYA | 7948 | 1517 |
+| BANDA | 7308 | 1547 |
+| MAHOBA | 6552 | 1122 |
+| SHAMLI (PRABUDH NAGER) | 4503 | 701 |
+| HAPUR (PANCHSHEEL NAGAR) | 4368 | 630 |
+| CHITRAKOOT | 4175 | 848 |
+| GHAZIABAD | 2958 | 253 |
+| 9999 | 16 | 2 |

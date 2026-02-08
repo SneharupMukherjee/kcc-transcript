@@ -1,0 +1,6 @@
+config/kcc.env
+.env
+.venv/
+__pycache__/
+data/
+data/**
