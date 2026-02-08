@@ -1,16 +1,21 @@
 from pathlib import Path
 
 import json
+import os
 
 import pandas as pd
 import streamlit as st
 import altair as alt
 from bokeh.models import ColorBar, GeoJSONDataSource, HoverTool, LinearColorMapper
 from bokeh.plotting import figure
+from huggingface_hub import hf_hub_download
 
 st.set_page_config(page_title="KCC Unified Explorer (2024-2025)", layout="wide")
 
 DATA_PATH = Path("/home/sneharup/KCC/apt/data/kcc_merged_2024_2025.csv")
+ENV_PATH = Path("/home/sneharup/KCC/apt/config/kcc.env")
+HF_DATASET_REPO = "D3m1-g0d/kcc-24-25"
+HF_DATASET_FILE = "kcc_merged_2024_2025.csv"
 APP_BG = "#050505"
 PLOT_BG = "#050505"
 ACCENT = "#ff9f43"
@@ -86,9 +91,40 @@ st.markdown(
 st.title("KCC Unified Analytics Dashboard (2024-2025)")
 st.caption("Kisan Call Centre transcripts (2024-2025) - interactive exploration and geographic insights")
 
-if not DATA_PATH.exists():
-    st.warning("Data file not found yet. Expected file: data/kcc_merged_2024_2025.csv.")
-    st.stop()
+def load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+load_env_file(ENV_PATH)
+
+
+@st.cache_resource(show_spinner=True)
+def resolve_data_path() -> Path | None:
+    if DATA_PATH.exists():
+        return DATA_PATH
+    repo_id = os.environ.get("HF_DATASET_REPO", HF_DATASET_REPO)
+    filename = os.environ.get("HF_DATASET_FILE", HF_DATASET_FILE)
+    token = os.environ.get("HF_TOKEN") or None
+    if not repo_id or not filename:
+        return None
+    try:
+        downloaded = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            repo_type="dataset",
+            token=token,
+        )
+    except Exception as exc:
+        st.error(f"Failed to download dataset from Hugging Face: {exc}")
+        return None
+    return Path(downloaded)
 
 
 @st.cache_data(show_spinner=True)
@@ -237,7 +273,12 @@ def top_ngrams(texts: pd.Series, n: int = 2, top_k: int = 15) -> pd.DataFrame:
     return out
 
 
-df = load_data(DATA_PATH)
+data_path = resolve_data_path()
+if not data_path:
+    st.warning("Data file not found locally and no Hugging Face dataset is configured.")
+    st.stop()
+
+df = load_data(data_path)
 
 with st.sidebar:
     st.header("Filters")
