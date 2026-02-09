@@ -14,9 +14,10 @@ st.set_page_config(page_title="KCC Unified Explorer (2024-2025)", layout="wide")
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_PATH = BASE_DIR / "data" / "kcc_merged_2024_2025.csv"
+PARQUET_PATH = BASE_DIR / "data" / "derived" / "kcc_merged_2024_2025.parquet"
 ENV_PATH = BASE_DIR / "config" / "kcc.env"
 HF_DATASET_REPO = "D3m1-g0d/kcc-24-25"
-HF_DATASET_FILE = "kcc_merged_2024_2025.csv"
+HF_DATASET_FILE = "kcc_merged_2024_2025.parquet"
 APP_BG = "#050505"
 PLOT_BG = "#050505"
 ACCENT = "#ff9f43"
@@ -113,6 +114,8 @@ def resolve_data_path() -> Path | None:
         candidate = Path(env_path)
         if candidate.exists():
             return candidate
+    if PARQUET_PATH.exists():
+        return PARQUET_PATH
     if DATA_PATH.exists():
         return DATA_PATH
     repo_id = os.environ.get("HF_DATASET_REPO", HF_DATASET_REPO)
