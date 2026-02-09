@@ -14,7 +14,6 @@ st.set_page_config(page_title="KCC Unified Explorer (2024-2025)", layout="wide")
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_PATH = BASE_DIR / "data" / "kcc_merged_2024_2025.csv"
-SAMPLE_DATA_PATH = BASE_DIR / "data" / "derived" / "kcc_merged_2024_2025_sample.csv"
 ENV_PATH = BASE_DIR / "config" / "kcc.env"
 HF_DATASET_REPO = "D3m1-g0d/kcc-24-25"
 HF_DATASET_FILE = "kcc_merged_2024_2025.csv"
@@ -114,8 +113,6 @@ def resolve_data_path() -> Path | None:
         candidate = Path(env_path)
         if candidate.exists():
             return candidate
-    if SAMPLE_DATA_PATH.exists():
-        return SAMPLE_DATA_PATH
     if DATA_PATH.exists():
         return DATA_PATH
     repo_id = os.environ.get("HF_DATASET_REPO", HF_DATASET_REPO)
@@ -272,7 +269,6 @@ if not data_path:
     st.warning("Data file not found locally and no Hugging Face dataset is configured.")
     st.stop()
 
-is_sample = data_path.name.endswith("_sample.csv") or data_path.resolve() == SAMPLE_DATA_PATH.resolve()
 lf = get_lazyframe(str(data_path), data_path.suffix.lower() == ".parquet")
 
 with st.sidebar:
@@ -295,8 +291,6 @@ with overview_left:
     st.metric("Total rows in dataset", f"{total_rows:,}")
 with overview_right:
     st.metric("Rows after filters", f"{filtered_rows:,}")
-if is_sample:
-    st.info("Using sample dataset. Upload or set KCC_DATA_PATH to use the full dataset.")
 
 st.subheader("Geo Insights")
 
