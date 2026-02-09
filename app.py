@@ -3,7 +3,6 @@ from pathlib import Path
 import json
 import os
 
-import duckdb
 import pandas as pd
 import streamlit as st
 import altair as alt
@@ -139,6 +138,11 @@ def resolve_data_path() -> Path | None:
 
 @st.cache_resource(show_spinner=True)
 def get_duckdb(path: str, is_parquet: bool):
+    try:
+        import duckdb  # local import to avoid hard crash during app boot
+    except Exception as exc:
+        st.error(f"DuckDB failed to import: {exc}")
+        st.stop()
     conn = duckdb.connect(database=":memory:")
     safe_path = path.replace("'", "''")
     if is_parquet:
