@@ -13,11 +13,9 @@ from huggingface_hub import hf_hub_download
 st.set_page_config(page_title="KCC Unified Explorer (2024-2025)", layout="wide")
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_PATH = BASE_DIR / "data" / "kcc_merged_2024_2025.csv"
-PARQUET_PATH = BASE_DIR / "data" / "derived" / "kcc_merged_2024_2025.parquet"
 ENV_PATH = BASE_DIR / "config" / "kcc.env"
-HF_DATASET_REPO = "D3m1-g0d/kcc-24-25"
-HF_DATASET_FILE = "kcc_merged_2024_2025.parquet"
+HF_DATASET_REPO = "D3m1-g0d/kcc-24-25-up"
+HF_DATASET_FILE = "kcc_merged_2024_2025_up.parquet"
 APP_BG = "#050505"
 PLOT_BG = "#050505"
 ACCENT = "#ff9f43"
@@ -109,15 +107,6 @@ load_env_file(ENV_PATH)
 
 @st.cache_resource(show_spinner=True)
 def resolve_data_path() -> Path | None:
-    env_path = os.environ.get("KCC_DATA_PATH")
-    if env_path:
-        candidate = Path(env_path)
-        if candidate.exists():
-            return candidate
-    if PARQUET_PATH.exists():
-        return PARQUET_PATH
-    if DATA_PATH.exists():
-        return DATA_PATH
     repo_id = os.environ.get("HF_DATASET_REPO", HF_DATASET_REPO)
     filename = os.environ.get("HF_DATASET_FILE", HF_DATASET_FILE)
     token = os.environ.get("HF_TOKEN") or None
@@ -273,31 +262,15 @@ if not data_path:
     st.stop()
 
 lf = get_lazyframe(str(data_path), data_path.suffix.lower() == ".parquet")
-# Temporary performance guard: restrict to Uttar Pradesh only.
-import polars as pl
-lf = lf.filter((pl.col("StateName").cast(pl.Utf8).str.to_lowercase().str.strip_chars()) == "uttar pradesh")
 
 with st.sidebar:
     st.header("Filters")
-    load_data = st.button("Load Data", type="primary")
-    if load_data:
-        state = st.multiselect("State", get_distinct(lf, "StateName"))
-        district = st.multiselect("District", get_distinct(lf, "DistrictName"))
-        crop = st.multiselect("Crop", get_distinct(lf, "Crop"))
-        query_type = st.multiselect("Query Type", get_distinct(lf, "QueryType"))
-        month = st.selectbox("Month", ["All"] + get_months(lf))
-        search = st.text_input("Search text", placeholder="Search in query text or answer")
-    else:
-        state = []
-        district = []
-        crop = []
-        query_type = []
-        month = "All"
-        search = ""
-
-if not load_data:
-    st.info("Click “Load Data” in the sidebar to initialize filters and analytics.")
-    st.stop()
+    state = st.multiselect("State", get_distinct(lf, "StateName"))
+    district = st.multiselect("District", get_distinct(lf, "DistrictName"))
+    crop = st.multiselect("Crop", get_distinct(lf, "Crop"))
+    query_type = st.multiselect("Query Type", get_distinct(lf, "QueryType"))
+    month = st.selectbox("Month", ["All"] + get_months(lf))
+    search = st.text_input("Search text", placeholder="Search in query text or answer")
 
 filter_exprs = build_filters(state, district, crop, query_type, month, search)
 lf_filtered = lf.filter(filter_exprs) if filter_exprs else lf
@@ -446,14 +419,11 @@ st.subheader("Query Drilldown")
 tab1, tab2 = st.tabs(["Top Query Texts", "Raw Samples"])
 with tab1:
     st.caption("Query text grouped by (Top 50)")
-    if st.button("Compute Top Query Texts"):
-        top_queries = get_top_query_texts(lf_filtered, limit=50)
-        if top_queries.empty:
-            st.info("No query text available for the current filters.")
-        else:
-            st.dataframe(top_queries, use_container_width=True, height=420)
+    top_queries = get_top_query_texts(lf_filtered, limit=50)
+    if top_queries.empty:
+        st.info("No query text available for the current filters.")
     else:
-        st.info("Click to compute. This can be slow on the full dataset.")
+        st.dataframe(top_queries, use_container_width=True, height=420)
 
 with tab2:
     st.caption("Representative query/answer samples with context")

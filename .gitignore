@@ -4,6 +4,6 @@ config/kcc.env
 __pycache__/
 data/
 data/**
-!data/derived/kcc_merged_2024_2025_sample.csv
 !data/derived/india_states.geojson
 !data/derived/india_districts.geojson
+docs/govt_schemes_apis.md
