@@ -276,12 +276,25 @@ lf = get_lazyframe(str(data_path), data_path.suffix.lower() == ".parquet")
 
 with st.sidebar:
     st.header("Filters")
-    state = st.multiselect("State", get_distinct(lf, "StateName"))
-    district = st.multiselect("District", get_distinct(lf, "DistrictName"))
-    crop = st.multiselect("Crop", get_distinct(lf, "Crop"))
-    query_type = st.multiselect("Query Type", get_distinct(lf, "QueryType"))
-    month = st.selectbox("Month", ["All"] + get_months(lf))
-    search = st.text_input("Search text", placeholder="Search in query text or answer")
+    load_data = st.button("Load Data", type="primary")
+    if load_data:
+        state = st.multiselect("State", get_distinct(lf, "StateName"))
+        district = st.multiselect("District", get_distinct(lf, "DistrictName"))
+        crop = st.multiselect("Crop", get_distinct(lf, "Crop"))
+        query_type = st.multiselect("Query Type", get_distinct(lf, "QueryType"))
+        month = st.selectbox("Month", ["All"] + get_months(lf))
+        search = st.text_input("Search text", placeholder="Search in query text or answer")
+    else:
+        state = []
+        district = []
+        crop = []
+        query_type = []
+        month = "All"
+        search = ""
+
+if not load_data:
+    st.info("Click “Load Data” in the sidebar to initialize filters and analytics.")
+    st.stop()
 
 filter_exprs = build_filters(state, district, crop, query_type, month, search)
 lf_filtered = lf.filter(filter_exprs) if filter_exprs else lf
@@ -430,11 +443,14 @@ st.subheader("Query Drilldown")
 tab1, tab2 = st.tabs(["Top Query Texts", "Raw Samples"])
 with tab1:
     st.caption("Query text grouped by (Top 50)")
-    top_queries = get_top_query_texts(lf_filtered, limit=50)
-    if top_queries.empty:
-        st.info("No query text available for the current filters.")
+    if st.button("Compute Top Query Texts"):
+        top_queries = get_top_query_texts(lf_filtered, limit=50)
+        if top_queries.empty:
+            st.info("No query text available for the current filters.")
+        else:
+            st.dataframe(top_queries, use_container_width=True, height=420)
     else:
-        st.dataframe(top_queries, use_container_width=True, height=420)
+        st.info("Click to compute. This can be slow on the full dataset.")
 
 with tab2:
     st.caption("Representative query/answer samples with context")
