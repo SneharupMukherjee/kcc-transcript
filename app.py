@@ -173,8 +173,8 @@ def build_filters(state, district, crop, query_type, month, search):
 def get_distinct(lf, column: str):
     import polars as pl
     out = (
-        lf.select(pl.col(column).drop_nulls().cast(pl.Utf8).str.strip())
-        .filter(pl.col(column) != "")
+        lf.select(pl.col(column).cast(pl.Utf8).str.strip())
+        .filter(pl.col(column).is_not_null() & (pl.col(column) != ""))
         .unique()
         .sort(column)
         .collect(streaming=True)
