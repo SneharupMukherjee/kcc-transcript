@@ -137,107 +137,116 @@ def resolve_data_path() -> Path | None:
 
 
 @st.cache_resource(show_spinner=True)
-def get_duckdb(path: str, is_parquet: bool):
+def get_lazyframe(path: str, is_parquet: bool):
     try:
-        import duckdb  # local import to avoid hard crash during app boot
+        import polars as pl  # local import to avoid hard crash during app boot
     except Exception as exc:
-        st.error(f"DuckDB failed to import: {exc}")
+        st.error(f"Polars failed to import: {exc}")
         st.stop()
-    conn = duckdb.connect(database=":memory:")
-    safe_path = path.replace("'", "''")
     if is_parquet:
-        conn.execute(f"CREATE OR REPLACE VIEW kcc AS SELECT * FROM read_parquet('{safe_path}')")
-    else:
-        conn.execute(f"CREATE OR REPLACE VIEW kcc AS SELECT * FROM read_csv_auto('{safe_path}')")
-    return conn
+        return pl.scan_parquet(path)
+    return pl.scan_csv(path, ignore_errors=True)
 
 
 def build_filters(state, district, crop, query_type, month, search):
-    clauses = []
-    params = []
+    import polars as pl
+    exprs = []
     if state:
-        placeholders = ",".join(["?"] * len(state))
-        clauses.append(f"StateName IN ({placeholders})")
-        params.extend(state)
+        exprs.append(pl.col("StateName").is_in(state))
     if district:
-        placeholders = ",".join(["?"] * len(district))
-        clauses.append(f"DistrictName IN ({placeholders})")
-        params.extend(district)
+        exprs.append(pl.col("DistrictName").is_in(district))
     if crop:
-        placeholders = ",".join(["?"] * len(crop))
-        clauses.append(f"Crop IN ({placeholders})")
-        params.extend(crop)
+        exprs.append(pl.col("Crop").is_in(crop))
     if query_type:
-        placeholders = ",".join(["?"] * len(query_type))
-        clauses.append(f"QueryType IN ({placeholders})")
-        params.extend(query_type)
+        exprs.append(pl.col("QueryType").is_in(query_type))
     if month != "All":
-        clauses.append("TRY_CAST(Month AS INTEGER) = ?")
-        params.append(month)
+        exprs.append(pl.col("Month").cast(pl.Int64, strict=False) == month)
     if search:
-        s = f"%{search.strip().lower()}%"
-        clauses.append("(lower(coalesce(QueryText, '')) LIKE ? OR lower(coalesce(KccAns, '')) LIKE ?)")
-        params.extend([s, s])
-    where = " WHERE " + " AND ".join(clauses) if clauses else ""
-    return where, params
+        s = search.strip().lower()
+        exprs.append(
+            pl.col("QueryText").fill_null("").str.to_lowercase().str.contains(s)
+            | pl.col("KccAns").fill_null("").str.to_lowercase().str.contains(s)
+        )
+    return exprs
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def get_distinct(conn, column: str):
-    rows = conn.execute(
-        f"SELECT DISTINCT {column} AS value FROM kcc WHERE {column} IS NOT NULL AND TRIM({column}) <> '' ORDER BY value"
-    ).fetchall()
-    return [r[0] for r in rows]
+def get_distinct(lf, column: str):
+    import polars as pl
+    out = (
+        lf.select(pl.col(column).drop_nulls().cast(pl.Utf8).str.strip())
+        .filter(pl.col(column) != "")
+        .unique()
+        .sort(column)
+        .collect(streaming=True)
+    )
+    return out[column].to_list()
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def get_months(conn):
-    rows = conn.execute(
-        "SELECT DISTINCT TRY_CAST(Month AS INTEGER) AS m FROM kcc WHERE m IS NOT NULL ORDER BY m"
-    ).fetchall()
-    return [r[0] for r in rows]
+def get_months(lf):
+    import polars as pl
+    out = (
+        lf.select(pl.col("Month").cast(pl.Int64, strict=False).alias("m"))
+        .drop_nulls()
+        .unique()
+        .sort("m")
+        .collect(streaming=True)
+    )
+    return out["m"].to_list()
 
 
 @st.cache_data(show_spinner=False, ttl=600)
-def get_row_count(conn, where: str, params: list):
-    return conn.execute(f"SELECT COUNT(*) FROM kcc{where}", params).fetchone()[0]
+def get_row_count(lf):
+    import polars as pl
+    return lf.select(pl.len()).collect(streaming=True).item()
 
 
 @st.cache_data(show_spinner=False, ttl=600)
-def get_counts(conn, where: str, params: list, group_cols: list[str], limit: int | None = None):
-    group_expr = ", ".join(group_cols)
-    q = f"SELECT {group_expr}, COUNT(*) AS count FROM kcc{where} GROUP BY {group_expr}"
+def get_counts(lf, group_cols: list[str], limit: int | None = None):
+    import polars as pl
+    out = lf.group_by(group_cols).len().rename({"len": "count"}).sort("count", descending=True)
     if limit:
-        q += " ORDER BY count DESC LIMIT ?"
-        params = params + [limit]
-    else:
-        q += " ORDER BY count DESC"
-    return conn.execute(q, params).fetch_df()
+        out = out.limit(limit)
+    return out.collect(streaming=True).to_pandas()
 
 
 @st.cache_data(show_spinner=False, ttl=600)
-def get_samples(conn, where: str, params: list):
-    q = f"""
-        SELECT StateName, DistrictName, Crop, QueryType, Month, QueryText, KccAns,
-               LENGTH(TRIM(coalesce(KccAns, ''))) AS ans_len
-        FROM kcc{where}
-        WHERE QueryText IS NOT NULL
-        ORDER BY ans_len DESC
-        LIMIT 20
-    """
-    return conn.execute(q, params).fetch_df()
+def get_samples(lf):
+    import polars as pl
+    out = (
+        lf.select(
+            "StateName",
+            "DistrictName",
+            "Crop",
+            "QueryType",
+            "Month",
+            "QueryText",
+            "KccAns",
+            pl.col("KccAns").fill_null("").cast(pl.Utf8).str.strip().str.len_bytes().alias("ans_len"),
+        )
+        .filter(pl.col("QueryText").is_not_null())
+        .sort("ans_len", descending=True)
+        .limit(20)
+        .collect(streaming=True)
+    )
+    return out.to_pandas()
 
 @st.cache_data(show_spinner=False, ttl=600)
-def get_top_query_texts(conn, where: str, params: list, limit: int = 50):
-    q = f"""
-        SELECT QueryText, COUNT(*) AS count
-        FROM kcc{where}
-        WHERE QueryText IS NOT NULL AND TRIM(QueryText) <> ''
-        GROUP BY QueryText
-        ORDER BY count DESC
-        LIMIT ?
-    """
-    return conn.execute(q, params + [limit]).fetch_df()
+def get_top_query_texts(lf, limit: int = 50):
+    import polars as pl
+    out = (
+        lf.filter(pl.col("QueryText").is_not_null())
+        .with_columns(pl.col("QueryText").cast(pl.Utf8).str.strip())
+        .filter(pl.col("QueryText") != "")
+        .group_by("QueryText")
+        .len()
+        .rename({"len": "count"})
+        .sort("count", descending=True)
+        .limit(limit)
+        .collect(streaming=True)
+    )
+    return out.to_pandas()
 
 
 def render_ordered_bar(data: pd.DataFrame, label_col: str = "label", value_col: str = "count"):
@@ -270,20 +279,21 @@ if not data_path:
     st.stop()
 
 is_sample = data_path.name.endswith("_sample.csv") or data_path.resolve() == SAMPLE_DATA_PATH.resolve()
-conn = get_duckdb(str(data_path), data_path.suffix.lower() == ".parquet")
+lf = get_lazyframe(str(data_path), data_path.suffix.lower() == ".parquet")
 
 with st.sidebar:
     st.header("Filters")
-    state = st.multiselect("State", get_distinct(conn, "StateName"))
-    district = st.multiselect("District", get_distinct(conn, "DistrictName"))
-    crop = st.multiselect("Crop", get_distinct(conn, "Crop"))
-    query_type = st.multiselect("Query Type", get_distinct(conn, "QueryType"))
-    month = st.selectbox("Month", ["All"] + get_months(conn))
+    state = st.multiselect("State", get_distinct(lf, "StateName"))
+    district = st.multiselect("District", get_distinct(lf, "DistrictName"))
+    crop = st.multiselect("Crop", get_distinct(lf, "Crop"))
+    query_type = st.multiselect("Query Type", get_distinct(lf, "QueryType"))
+    month = st.selectbox("Month", ["All"] + get_months(lf))
     search = st.text_input("Search text", placeholder="Search in query text or answer")
 
-where, params = build_filters(state, district, crop, query_type, month, search)
-total_rows = get_row_count(conn, "", [])
-filtered_rows = get_row_count(conn, where, params)
+filter_exprs = build_filters(state, district, crop, query_type, month, search)
+lf_filtered = lf.filter(filter_exprs) if filter_exprs else lf
+total_rows = get_row_count(lf)
+filtered_rows = get_row_count(lf_filtered)
 
 st.subheader("Dataset Overview")
 overview_left, overview_right = st.columns(2)
@@ -306,7 +316,7 @@ with map_left:
     district_geojson_path = BASE_DIR / "data" / "derived" / "india_districts.geojson"
     if district_geojson_path.exists():
         district_geojson = json.loads(district_geojson_path.read_text(encoding="utf-8"))
-        district_counts = get_counts(conn, where, params, ["StateName", "DistrictName"])
+        district_counts = get_counts(lf_filtered, ["StateName", "DistrictName"])
         district_counts["StateKey"] = district_counts["StateName"].apply(norm)
         district_counts["DistrictKey"] = district_counts["DistrictName"].apply(norm)
         district_lookup = {
@@ -359,7 +369,7 @@ with map_right:
     geojson_path = BASE_DIR / "data" / "derived" / "india_states.geojson"
     if geojson_path.exists():
         geojson = json.loads(geojson_path.read_text(encoding="utf-8"))
-        state_counts = get_counts(conn, where, params, ["StateName"])
+        state_counts = get_counts(lf_filtered, ["StateName"])
         state_counts["StateKey"] = state_counts["StateName"].apply(norm)
         state_lookup = state_counts.set_index("StateKey")["count"]
         for feat in geojson.get("features", []):
@@ -404,24 +414,24 @@ st.subheader("Top Segments")
 row1_a, row1_b = st.columns(2)
 with row1_a:
     st.write("Top Districts (Top 10)")
-    top_districts = get_counts(conn, where, params, ["DistrictName"], limit=10)
+    top_districts = get_counts(lf_filtered, ["DistrictName"], limit=10)
     top_districts = top_districts.rename(columns={"DistrictName": "label"}).sort_values("count", ascending=False)
     render_ordered_bar(top_districts)
 with row1_b:
     st.write("Top States (Top 10)")
-    top_states = get_counts(conn, where, params, ["StateName"], limit=10)
+    top_states = get_counts(lf_filtered, ["StateName"], limit=10)
     top_states = top_states.rename(columns={"StateName": "label"}).sort_values("count", ascending=False)
     render_ordered_bar(top_states)
 
 row2_a, row2_b = st.columns(2)
 with row2_a:
     st.write("Top Query Types (Top 10)")
-    top_query_types = get_counts(conn, where, params, ["QueryType"], limit=10)
+    top_query_types = get_counts(lf_filtered, ["QueryType"], limit=10)
     top_query_types = top_query_types.rename(columns={"QueryType": "label"}).sort_values("count", ascending=False)
     render_ordered_bar(top_query_types)
 with row2_b:
     st.write("Top Crops (Top 10)")
-    top_crops = get_counts(conn, where, params, ["Crop"], limit=10)
+    top_crops = get_counts(lf_filtered, ["Crop"], limit=10)
     top_crops = top_crops.rename(columns={"Crop": "label"}).sort_values("count", ascending=False)
     render_ordered_bar(top_crops)
 
@@ -429,7 +439,7 @@ st.subheader("Query Drilldown")
 tab1, tab2 = st.tabs(["Top Query Texts", "Raw Samples"])
 with tab1:
     st.caption("Query text grouped by (Top 50)")
-    top_queries = get_top_query_texts(conn, where, params, limit=50)
+    top_queries = get_top_query_texts(lf_filtered, limit=50)
     if top_queries.empty:
         st.info("No query text available for the current filters.")
     else:
@@ -437,7 +447,7 @@ with tab1:
 
 with tab2:
     st.caption("Representative query/answer samples with context")
-    samples = get_samples(conn, where, params)
+    samples = get_samples(lf_filtered)
     if samples.empty:
         st.info("No sample rows available for this query type.")
     else:
