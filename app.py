@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import os
 
+import duckdb
 import pandas as pd
 import streamlit as st
 import altair as alt
@@ -136,13 +137,102 @@ def resolve_data_path() -> Path | None:
     return Path(downloaded)
 
 
-@st.cache_data(show_spinner=True)
-def load_data(path: Path):
-    df = pd.read_csv(path)
-    # Normalize column types for filtering
-    if "Month" in df.columns:
-        df["Month"] = pd.to_numeric(df["Month"], errors="coerce")
-    return df
+@st.cache_resource(show_spinner=True)
+def get_duckdb(path: str, is_parquet: bool):
+    conn = duckdb.connect(database=":memory:")
+    if is_parquet:
+        conn.execute("CREATE OR REPLACE VIEW kcc AS SELECT * FROM read_parquet(?)", [path])
+    else:
+        conn.execute("CREATE OR REPLACE VIEW kcc AS SELECT * FROM read_csv_auto(?)", [path])
+    return conn
+
+
+def build_filters(state, district, crop, query_type, month, search):
+    clauses = []
+    params = []
+    if state:
+        placeholders = ",".join(["?"] * len(state))
+        clauses.append(f"StateName IN ({placeholders})")
+        params.extend(state)
+    if district:
+        placeholders = ",".join(["?"] * len(district))
+        clauses.append(f"DistrictName IN ({placeholders})")
+        params.extend(district)
+    if crop:
+        placeholders = ",".join(["?"] * len(crop))
+        clauses.append(f"Crop IN ({placeholders})")
+        params.extend(crop)
+    if query_type:
+        placeholders = ",".join(["?"] * len(query_type))
+        clauses.append(f"QueryType IN ({placeholders})")
+        params.extend(query_type)
+    if month != "All":
+        clauses.append("TRY_CAST(Month AS INTEGER) = ?")
+        params.append(month)
+    if search:
+        s = f"%{search.strip().lower()}%"
+        clauses.append("(lower(coalesce(QueryText, '')) LIKE ? OR lower(coalesce(KccAns, '')) LIKE ?)")
+        params.extend([s, s])
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    return where, params
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def get_distinct(conn, column: str):
+    rows = conn.execute(
+        f"SELECT DISTINCT {column} AS value FROM kcc WHERE {column} IS NOT NULL AND TRIM({column}) <> '' ORDER BY value"
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def get_months(conn):
+    rows = conn.execute(
+        "SELECT DISTINCT TRY_CAST(Month AS INTEGER) AS m FROM kcc WHERE m IS NOT NULL ORDER BY m"
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def get_row_count(conn, where: str, params: list):
+    return conn.execute(f"SELECT COUNT(*) FROM kcc{where}", params).fetchone()[0]
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def get_counts(conn, where: str, params: list, group_cols: list[str], limit: int | None = None):
+    group_expr = ", ".join(group_cols)
+    q = f"SELECT {group_expr}, COUNT(*) AS count FROM kcc{where} GROUP BY {group_expr}"
+    if limit:
+        q += " ORDER BY count DESC LIMIT ?"
+        params = params + [limit]
+    else:
+        q += " ORDER BY count DESC"
+    return conn.execute(q, params).fetch_df()
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def get_samples(conn, where: str, params: list):
+    q = f"""
+        SELECT StateName, DistrictName, Crop, QueryType, Month, QueryText, KccAns,
+               LENGTH(TRIM(coalesce(KccAns, ''))) AS ans_len
+        FROM kcc{where}
+        WHERE QueryText IS NOT NULL
+        ORDER BY ans_len DESC
+        LIMIT 20
+    """
+    return conn.execute(q, params).fetch_df()
+
+@st.cache_data(show_spinner=False, ttl=600)
+def get_top_query_texts(conn, where: str, params: list, limit: int = 50):
+    q = f"""
+        SELECT QueryText, COUNT(*) AS count
+        FROM kcc{where}
+        WHERE QueryText IS NOT NULL AND TRIM(QueryText) <> ''
+        GROUP BY QueryText
+        ORDER BY count DESC
+        LIMIT ?
+    """
+    return conn.execute(q, params + [limit]).fetch_df()
 
 
 def render_ordered_bar(data: pd.DataFrame, label_col: str = "label", value_col: str = "count"):
@@ -168,147 +258,36 @@ def render_ordered_bar(data: pd.DataFrame, label_col: str = "label", value_col: 
     st.altair_chart(chart, use_container_width=True)
 
 
-def render_percent_pie(data: pd.DataFrame, label_col: str = "label", value_col: str = "count"):
-    if data.empty:
-        st.info("No data available.")
-        return
-    df = data.copy()
-    total = df[value_col].sum()
-    if total <= 0:
-        st.info("No data available.")
-        return
-    df["percent"] = df[value_col] / total
-    pie_colors = [
-        "#f7c59f",
-        "#f3b07a",
-        "#ee9b51",
-        "#e8832a",
-        "#d96b1f",
-        "#bf5b19",
-        "#a64a16",
-        "#8a3b13",
-        "#6f2f11",
-        "#55260f",
-    ]
-    base = (
-        alt.Chart(df)
-        .encode(
-            theta=alt.Theta(f"{value_col}:Q"),
-            color=alt.Color(f"{label_col}:N", scale=alt.Scale(range=pie_colors), legend=None),
-            tooltip=[
-                alt.Tooltip(f"{label_col}:N", title="Label"),
-                alt.Tooltip(f"{value_col}:Q", title="Count", format=","),
-                alt.Tooltip("percent:Q", title="Percent", format=".1%"),
-            ],
-        )
-        .properties(height=320)
-    )
-    pie = base.mark_arc(innerRadius=30, outerRadius=120)
-    chart = (
-        pie
-        .configure_view(strokeOpacity=0)
-        .properties(background=PLOT_BG)
-    )
-    st.altair_chart(chart, use_container_width=True)
-
-
-def normalize_text_series(s: pd.Series) -> pd.Series:
-    return (
-        s.fillna("")
-        .astype(str)
-        .str.lower()
-        # Keep Unicode letters for "All scripts" mode; strip punctuation/symbols.
-        .str.replace(r"[^\w\s]", " ", regex=True)
-        .str.replace(r"[_\d]+", " ", regex=True)
-        .str.replace(r"\s+", " ", regex=True)
-        .str.strip()
-    )
-
-
-STOPWORDS = {
-    "the", "is", "am", "are", "was", "were", "be", "been", "being", "to", "of", "in", "on", "for", "at",
-    "by", "from", "with", "and", "or", "as", "an", "a", "it", "this", "that", "these", "those", "about",
-    "regarding", "related", "asked", "asking", "query", "queries", "information", "farmer", "farmers",
-    "kisan", "samman", "nidhi", "pm", "yojana", "status", "beneficiary", "scheme", "details", "na", "none",
-    "call", "centre", "center", "phone", "mobile", "number", "no", "ask", "asked", "told", "said", "want",
-    "wants", "need", "needed", "please", "farmerquery", "farmerquerys", "farmerquerytype",
-    "provide", "contact", "information", "not", "how", "giving", "new", "when", "next", "date", "helpline",
-}
-
-
-def filtered_tokens(texts: pd.Series) -> pd.Series:
-    toks = normalize_text_series(texts).str.split()
-    cleaned = toks.apply(
-        lambda arr: [t for t in arr if t and t not in STOPWORDS and len(t) > 2]
-    )
-    return cleaned
-
-
-def top_ngrams(texts: pd.Series, n: int = 2, top_k: int = 15) -> pd.DataFrame:
-    tokens = filtered_tokens(texts)
-    counts = {}
-    for arr in tokens:
-        if not arr or len(arr) < n:
-            continue
-        for i in range(len(arr) - n + 1):
-            gram = " ".join(arr[i : i + n])
-            if len(gram) < 4:
-                continue
-            # Drop grams composed of generic fillers that sneak through.
-            parts = gram.split()
-            if any(
-                p in {
-                    "call", "centre", "center", "number", "ask", "asked", "information",
-                    "status", "details", "scheme", "regarding", "related",
-                }
-                for p in parts
-            ):
-                continue
-            counts[gram] = counts.get(gram, 0) + 1
-    if not counts:
-        return pd.DataFrame(columns=["phrase", "count"])
-    out = (
-        pd.Series(counts, name="count")
-        .sort_values(ascending=False)
-        .head(top_k)
-        .rename_axis("phrase")
-        .reset_index()
-    )
-    return out
-
 
 data_path = resolve_data_path()
 if not data_path:
     st.warning("Data file not found locally and no Hugging Face dataset is configured.")
     st.stop()
 
-df = load_data(data_path)
+is_sample = data_path.name.endswith("_sample.csv") or data_path.resolve() == SAMPLE_DATA_PATH.resolve()
+conn = get_duckdb(str(data_path), data_path.suffix.lower() == ".parquet")
 
 with st.sidebar:
     st.header("Filters")
-    state = st.multiselect("State", sorted(df["StateName"].dropna().unique().tolist()))
-    district = st.multiselect("District", sorted(df["DistrictName"].dropna().unique().tolist()))
-    crop = st.multiselect("Crop", sorted(df["Crop"].dropna().unique().tolist()))
-    query_type = st.multiselect("Query Type", sorted(df["QueryType"].dropna().unique().tolist()))
-    month = st.selectbox("Month", ["All"] + sorted(df["Month"].dropna().unique().tolist()))
+    state = st.multiselect("State", get_distinct(conn, "StateName"))
+    district = st.multiselect("District", get_distinct(conn, "DistrictName"))
+    crop = st.multiselect("Crop", get_distinct(conn, "Crop"))
+    query_type = st.multiselect("Query Type", get_distinct(conn, "QueryType"))
+    month = st.selectbox("Month", ["All"] + get_months(conn))
     search = st.text_input("Search text", placeholder="Search in query text or answer")
 
-filtered = df
-if state:
-    filtered = filtered[filtered["StateName"].isin(state)]
-if district:
-    filtered = filtered[filtered["DistrictName"].isin(district)]
-if crop:
-    filtered = filtered[filtered["Crop"].isin(crop)]
-if query_type:
-    filtered = filtered[filtered["QueryType"].isin(query_type)]
-if month != "All":
-    filtered = filtered[filtered["Month"] == month]
-if search:
-    s = search.strip().lower()
-    qt = filtered["QueryText"].fillna("").str.lower()
-    ka = filtered["KccAns"].fillna("").str.lower()
-    filtered = filtered[qt.str.contains(s) | ka.str.contains(s)]
+where, params = build_filters(state, district, crop, query_type, month, search)
+total_rows = get_row_count(conn, "", [])
+filtered_rows = get_row_count(conn, where, params)
+
+st.subheader("Dataset Overview")
+overview_left, overview_right = st.columns(2)
+with overview_left:
+    st.metric("Total rows in dataset", f"{total_rows:,}")
+with overview_right:
+    st.metric("Rows after filters", f"{filtered_rows:,}")
+if is_sample:
+    st.info("Using sample dataset. Upload or set KCC_DATA_PATH to use the full dataset.")
 
 st.subheader("Geo Insights")
 
@@ -322,11 +301,7 @@ with map_left:
     district_geojson_path = BASE_DIR / "data" / "derived" / "india_districts.geojson"
     if district_geojson_path.exists():
         district_geojson = json.loads(district_geojson_path.read_text(encoding="utf-8"))
-        district_counts = (
-            filtered.groupby(["StateName", "DistrictName"], dropna=False)
-            .size()
-            .reset_index(name="count")
-        )
+        district_counts = get_counts(conn, where, params, ["StateName", "DistrictName"])
         district_counts["StateKey"] = district_counts["StateName"].apply(norm)
         district_counts["DistrictKey"] = district_counts["DistrictName"].apply(norm)
         district_lookup = {
@@ -379,8 +354,7 @@ with map_right:
     geojson_path = BASE_DIR / "data" / "derived" / "india_states.geojson"
     if geojson_path.exists():
         geojson = json.loads(geojson_path.read_text(encoding="utf-8"))
-        state_counts = filtered["StateName"].value_counts().reset_index()
-        state_counts.columns = ["StateName", "count"]
+        state_counts = get_counts(conn, where, params, ["StateName"])
         state_counts["StateKey"] = state_counts["StateName"].apply(norm)
         state_lookup = state_counts.set_index("StateKey")["count"]
         for feat in geojson.get("features", []):
@@ -425,124 +399,40 @@ st.subheader("Top Segments")
 row1_a, row1_b = st.columns(2)
 with row1_a:
     st.write("Top Districts (Top 10)")
-    top_districts = (
-        filtered["DistrictName"]
-        .astype(str)
-        .str.strip()
-        .replace({"": pd.NA, "NA": pd.NA, "N/A": pd.NA, "nan": pd.NA, "None": pd.NA})
-        .dropna()
-        .value_counts()
-        .head(10)
-        .rename_axis("label")
-        .reset_index(name="count")
-        .sort_values("count", ascending=False)
-    )
+    top_districts = get_counts(conn, where, params, ["DistrictName"], limit=10)
+    top_districts = top_districts.rename(columns={"DistrictName": "label"}).sort_values("count", ascending=False)
     render_ordered_bar(top_districts)
 with row1_b:
     st.write("Top States (Top 10)")
-    top_states = (
-        filtered["StateName"]
-        .astype(str)
-        .str.strip()
-        .replace({"": pd.NA, "NA": pd.NA, "N/A": pd.NA, "nan": pd.NA, "None": pd.NA})
-        .dropna()
-        .value_counts()
-        .head(10)
-        .rename_axis("label")
-        .reset_index(name="count")
-        .sort_values("count", ascending=False)
-    )
+    top_states = get_counts(conn, where, params, ["StateName"], limit=10)
+    top_states = top_states.rename(columns={"StateName": "label"}).sort_values("count", ascending=False)
     render_ordered_bar(top_states)
 
 row2_a, row2_b = st.columns(2)
 with row2_a:
     st.write("Top Query Types (Top 10)")
-    clean_qt = filtered["QueryType"].astype(str).str.replace("\t", "", regex=False).str.strip()
-    top_query_types = (
-        clean_qt.value_counts()
-        .head(10)
-        .rename_axis("label")
-        .reset_index(name="count")
-        .sort_values("count", ascending=False)
-    )
+    top_query_types = get_counts(conn, where, params, ["QueryType"], limit=10)
+    top_query_types = top_query_types.rename(columns={"QueryType": "label"}).sort_values("count", ascending=False)
     render_ordered_bar(top_query_types)
 with row2_b:
     st.write("Top Crops (Top 10)")
-    top_crops = (
-        filtered["Crop"]
-        .astype(str)
-        .str.strip()
-        .value_counts()
-        .head(10)
-        .rename_axis("label")
-        .reset_index(name="count")
-        .sort_values("count", ascending=False)
-    )
+    top_crops = get_counts(conn, where, params, ["Crop"], limit=10)
+    top_crops = top_crops.rename(columns={"Crop": "label"}).sort_values("count", ascending=False)
     render_ordered_bar(top_crops)
 
-st.subheader("Top Segments (Share %)")
-pie1_a, pie1_b = st.columns(2)
-with pie1_a:
-    st.write("Top Districts (Top 10)")
-    render_percent_pie(top_districts)
-with pie1_b:
-    st.write("Top States (Top 10)")
-    render_percent_pie(top_states)
-
-pie2_a, pie2_b = st.columns(2)
-with pie2_a:
-    st.write("Top Query Types (Top 10)")
-    render_percent_pie(top_query_types)
-with pie2_b:
-    st.write("Top Crops (Top 10)")
-    render_percent_pie(top_crops)
-
 st.subheader("Query Drilldown")
-drill = filtered.copy()
-
-tab1, tab2 = st.tabs(["Most Frequent Phrases", "Raw Samples"])
+tab1, tab2 = st.tabs(["Top Query Texts", "Raw Samples"])
 with tab1:
-    c1, c2 = st.columns(2)
-    with c1:
-        st.caption("Top Bigrams")
-        bi = top_ngrams(
-            drill["QueryText"] if len(drill) else pd.Series(dtype=str),
-            n=2,
-            top_k=12,
-        )
-        if len(bi):
-            render_ordered_bar(bi.rename(columns={"phrase": "label"}), label_col="label", value_col="count")
-        else:
-            st.info("No phrase data available.")
-    with c2:
-        st.caption("Bigram Cloud (cleaned)")
-        bigram_cloud = top_ngrams(
-            drill["QueryText"] if len(drill) else pd.Series(dtype=str),
-            n=2,
-            top_k=35,
-        )
-        if len(bigram_cloud):
-            max_c = max(bigram_cloud["count"].max(), 1)
-            html = []
-            for _, r in bigram_cloud.iterrows():
-                size = 12 + int((r["count"] / max_c) * 22)
-                opacity = 0.55 + (r["count"] / max_c) * 0.45
-                html.append(
-                    f"<span style='font-size:{size}px; opacity:{opacity:.2f}; margin:6px 8px; display:inline-block; color:{ACCENT};'>{r['phrase']}</span>"
-                )
-            st.markdown(
-                f"""<div style="background:{PLOT_BG}; border:1px solid #2a2a2a; border-radius:10px; padding:12px; line-height:1.8; height:320px; overflow:auto;">{''.join(html)}</div>""",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.info("No keyword data available.")
+    st.caption("Query text grouped by (Top 50)")
+    top_queries = get_top_query_texts(conn, where, params, limit=50)
+    if top_queries.empty:
+        st.info("No query text available for the current filters.")
+    else:
+        st.dataframe(top_queries, use_container_width=True, height=420)
 
 with tab2:
     st.caption("Representative query/answer samples with context")
-    sample_cols = ["StateName", "DistrictName", "Crop", "QueryType", "Month", "QueryText", "KccAns"]
-    samples = drill[sample_cols].dropna(subset=["QueryText"]).copy()
-    samples["ans_len"] = samples["KccAns"].astype(str).str.strip().str.len()
-    samples = samples.sort_values("ans_len", ascending=False).head(20)
+    samples = get_samples(conn, where, params)
     if samples.empty:
         st.info("No sample rows available for this query type.")
     else:
