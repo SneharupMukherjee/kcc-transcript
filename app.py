@@ -273,6 +273,9 @@ if not data_path:
     st.stop()
 
 lf = get_lazyframe(str(data_path), data_path.suffix.lower() == ".parquet")
+# Temporary performance guard: restrict to Uttar Pradesh only.
+import polars as pl
+lf = lf.filter((pl.col("StateName").cast(pl.Utf8).str.to_lowercase().str.strip_chars()) == "uttar pradesh")
 
 with st.sidebar:
     st.header("Filters")
