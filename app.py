@@ -140,10 +140,11 @@ def resolve_data_path() -> Path | None:
 @st.cache_resource(show_spinner=True)
 def get_duckdb(path: str, is_parquet: bool):
     conn = duckdb.connect(database=":memory:")
+    safe_path = path.replace("'", "''")
     if is_parquet:
-        conn.execute("CREATE OR REPLACE VIEW kcc AS SELECT * FROM read_parquet(?)", [path])
+        conn.execute(f"CREATE OR REPLACE VIEW kcc AS SELECT * FROM read_parquet('{safe_path}')")
     else:
-        conn.execute("CREATE OR REPLACE VIEW kcc AS SELECT * FROM read_csv_auto(?)", [path])
+        conn.execute(f"CREATE OR REPLACE VIEW kcc AS SELECT * FROM read_csv_auto('{safe_path}')")
     return conn
 
 
