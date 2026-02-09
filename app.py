@@ -173,7 +173,7 @@ def build_filters(state, district, crop, query_type, month, search):
 def get_distinct(lf, column: str):
     import polars as pl
     out = (
-        lf.select(pl.col(column).cast(pl.Utf8).str.strip())
+        lf.select(pl.col(column).cast(pl.Utf8).str.strip_chars())
         .filter(pl.col(column).is_not_null() & (pl.col(column) != ""))
         .unique()
         .sort(column)
@@ -218,7 +218,7 @@ def get_samples(lf):
             "Month",
             "QueryText",
             "KccAns",
-            pl.col("KccAns").fill_null("").cast(pl.Utf8).str.strip().str.len_bytes().alias("ans_len"),
+            pl.col("KccAns").fill_null("").cast(pl.Utf8).str.strip_chars().str.len_bytes().alias("ans_len"),
         )
         .filter(pl.col("QueryText").is_not_null())
         .sort("ans_len", descending=True)
@@ -231,7 +231,7 @@ def get_top_query_texts(lf, limit: int = 50):
     import polars as pl
     out = (
         lf.filter(pl.col("QueryText").is_not_null())
-        .with_columns(pl.col("QueryText").cast(pl.Utf8).str.strip())
+        .with_columns(pl.col("QueryText").cast(pl.Utf8).str.strip_chars())
         .filter(pl.col("QueryText") != "")
         .group_by("QueryText")
         .len()
