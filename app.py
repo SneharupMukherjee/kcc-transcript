@@ -170,7 +170,6 @@ def build_filters(state, district, crop, query_type, month, search):
     return exprs
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
 def get_distinct(lf, column: str):
     import polars as pl
     out = (
@@ -183,7 +182,6 @@ def get_distinct(lf, column: str):
     return out[column].to_list()
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
 def get_months(lf):
     import polars as pl
     out = (
@@ -196,13 +194,11 @@ def get_months(lf):
     return out["m"].to_list()
 
 
-@st.cache_data(show_spinner=False, ttl=600)
 def get_row_count(lf):
     import polars as pl
     return lf.select(pl.len()).collect(streaming=True).item()
 
 
-@st.cache_data(show_spinner=False, ttl=600)
 def get_counts(lf, group_cols: list[str], limit: int | None = None):
     import polars as pl
     out = lf.group_by(group_cols).len().rename({"len": "count"}).sort("count", descending=True)
@@ -211,7 +207,6 @@ def get_counts(lf, group_cols: list[str], limit: int | None = None):
     return out.collect(streaming=True).to_pandas()
 
 
-@st.cache_data(show_spinner=False, ttl=600)
 def get_samples(lf):
     import polars as pl
     out = (
@@ -232,7 +227,6 @@ def get_samples(lf):
     )
     return out.to_pandas()
 
-@st.cache_data(show_spinner=False, ttl=600)
 def get_top_query_texts(lf, limit: int = 50):
     import polars as pl
     out = (
