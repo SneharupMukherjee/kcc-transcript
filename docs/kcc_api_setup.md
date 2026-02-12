@@ -7,11 +7,11 @@ mkdir -p config data docs scripts
 ```
 
 ## Environment Configuration
-Create `config/kcc.env` with these exact values:
+Create `config/kcc.env` with your own values (do not commit API keys):
 ```dotenv
 # KCC API config
 KCC_API_BASE_URL=https://api.data.gov.in/resource/cef25fe2-9231-4128-8aec-2c948fedd43f
-KCC_API_KEY=579b464db66ec23bdd000001b27ef70e3ab7476a7675e04561a0aeb2
+KCC_API_KEY=YOUR_API_KEY
 KCC_DEFAULT_FORMAT=csv
 KCC_DEFAULT_YEAR=2024
 KCC_DEFAULT_LIMIT=10000

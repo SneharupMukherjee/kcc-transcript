@@ -4,3 +4,6 @@ bokeh==2.4.3
 numpy==1.26.4
 huggingface_hub==1.4.1
 polars==1.17.1
+scikit-learn==1.4.2
+hdbscan==0.8.33
+tqdm==4.66.4

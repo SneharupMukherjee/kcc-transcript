@@ -88,8 +88,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("KCC Unified Analytics Dashboard (2024-2025)")
-st.caption("Kisan Call Centre transcripts (2024-2025) - interactive exploration and geographic insights")
+st.title("KCC Uttar Pradesh Analytics Dashboard (2024-2025)")
+st.caption("Kisan Call Centre transcripts for Uttar Pradesh (2024-2025) - interactive exploration and geographic insights")
 
 def load_env_file(path: Path) -> None:
     if not path.exists():
@@ -216,20 +216,98 @@ def get_samples(lf):
     )
     return out.to_pandas()
 
-def get_top_query_texts(lf, limit: int = 50):
+
+def normalize_query_text(col):
     import polars as pl
+    expr = (
+        col.cast(pl.Utf8)
+        .str.to_lowercase()
+        .str.replace_all(r"[^\w\s]", " ")
+        .str.replace_all(r"\bpm\s+ksny\b", " ")
+        .str.replace_all(r"\b(the|on|a|of|information|about|to|in|asked|me|tell|beneficiary|beneficiaries|please|give|checking|and|under|how|for|provide|know|knowing|your|regarding|ask|related|while)\b", " ")
+        .str.replace_all(r"\bpradhan\s+mantri\b", "pm")
+        .str.replace_all(r"\bprime\s+minister\b", "pm")
+        .str.replace_all(r"\byojana\b", "scheme")
+        .str.replace_all(r"\byojna\b", "scheme")
+        .str.replace_all(r"pm\s+kisan\s+samman\s+nidhi", "pmksn")
+        .str.replace_all(r"\bpm\s+kisan\b", "pmksn")
+        .str.replace_all(r"kisan\s+samman\s+nidhi", "pmksn")
+    )
+    expr = pl.when(expr.str.contains(r"\bstatus\b")).then(
+        pl.concat_str(
+            [
+                pl.lit("status "),
+                expr.str.replace_all(r"\bstatus\b", " "),
+            ]
+        )
+    ).otherwise(expr)
+    expr = expr.str.replace_all(r"\bscheme\b", " ")
+    return expr.str.replace_all(r"\s+", " ").str.strip_chars()
+
+
+def get_group_samples(lf, group_text: str, limit: int = 25):
+    import polars as pl
+    cleaned = normalize_query_text(pl.col("QueryText"))
     out = (
         lf.filter(pl.col("QueryText").is_not_null())
-        .with_columns(pl.col("QueryText").cast(pl.Utf8).str.strip_chars())
-        .filter(pl.col("QueryText") != "")
-        .group_by("QueryText")
-        .len()
-        .rename({"len": "count"})
-        .sort("count", descending=True)
+        .with_columns(cleaned.alias("QueryTextNorm"))
+        .filter(pl.col("QueryTextNorm") == group_text)
+        .select("QueryText", "KccAns")
         .limit(limit)
         .collect(streaming=True)
     )
     return out.to_pandas()
+
+def get_top_descriptive_answers(lf, limit: int | None = None):
+    import polars as pl
+    cleaned = normalize_query_text(pl.col("QueryText"))
+    out = (
+        lf.filter(pl.col("QueryText").is_not_null())
+        .with_columns(
+            cleaned.alias("QueryTextNorm"),
+            pl.col("KccAns")
+            .fill_null("")
+            .cast(pl.Utf8)
+            .str.strip_chars()
+            .str.len_bytes()
+            .alias("AnsLen"),
+        )
+        .filter(pl.col("QueryTextNorm") != "")
+        .group_by("QueryTextNorm")
+        .agg(
+            pl.len().alias("count"),
+            pl.max("AnsLen").alias("max_ans_len"),
+            pl.mean("AnsLen").alias("avg_ans_len"),
+        )
+        .sort("max_ans_len", descending=True)
+    )
+    if limit is not None:
+        out = out.limit(limit)
+    out = out.collect(streaming=True)
+    return out.rename({"QueryTextNorm": "QueryText"}).to_pandas()
+
+def get_top_query_texts(lf, limit: int | None = None):
+    import polars as pl
+    cleaned = normalize_query_text(pl.col("QueryText"))
+    out = (
+        lf.filter(pl.col("QueryText").is_not_null())
+        .with_columns(cleaned.alias("QueryTextNorm"))
+        .filter(pl.col("QueryTextNorm") != "")
+        .group_by("QueryTextNorm")
+        .len()
+        .rename({"len": "count"})
+        .sort("count", descending=True)
+    )
+    if limit is not None:
+        out = out.limit(limit)
+    out = out.collect(streaming=True)
+    return out.rename({"QueryTextNorm": "QueryText"}).to_pandas()
+
+@st.cache_data(show_spinner=False)
+def load_intent_summaries(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_parquet(path)
 
 
 def render_ordered_bar(data: pd.DataFrame, label_col: str = "label", value_col: str = "count"):
@@ -264,27 +342,32 @@ if not data_path:
 lf = get_lazyframe(str(data_path), data_path.suffix.lower() == ".parquet")
 
 with st.sidebar:
-    st.header("Filters")
-    state = st.multiselect("State", get_distinct(lf, "StateName"))
+    st.header("Filters (Uttar Pradesh only)")
     district = st.multiselect("District", get_distinct(lf, "DistrictName"))
     crop = st.multiselect("Crop", get_distinct(lf, "Crop"))
-    query_type = st.multiselect("Query Type", get_distinct(lf, "QueryType"))
+    query_type_options = get_distinct(lf, "QueryType")
+    default_query_type = []
+    for opt in query_type_options:
+        if "government" in str(opt).lower() and "scheme" in str(opt).lower():
+            default_query_type = [opt]
+            break
+    query_type = st.multiselect("Query Type", query_type_options, default=default_query_type)
     month = st.selectbox("Month", ["All"] + get_months(lf))
     search = st.text_input("Search text", placeholder="Search in query text or answer")
 
-filter_exprs = build_filters(state, district, crop, query_type, month, search)
+filter_exprs = build_filters([], district, crop, query_type, month, search)
 lf_filtered = lf.filter(filter_exprs) if filter_exprs else lf
 total_rows = get_row_count(lf)
 filtered_rows = get_row_count(lf_filtered)
 
-st.subheader("Dataset Overview")
+st.subheader("Dataset Overview (Uttar Pradesh)")
 overview_left, overview_right = st.columns(2)
 with overview_left:
     st.metric("Total rows in dataset", f"{total_rows:,}")
 with overview_right:
     st.metric("Rows after filters", f"{filtered_rows:,}")
 
-st.subheader("Geo Insights")
+st.subheader("Geo Insights (Uttar Pradesh)")
 
 def norm(s):
     return str(s).strip().lower().replace(" ", "")
@@ -390,7 +473,7 @@ with map_right:
     else:
         st.info("Add data/derived/india_states.geojson to enable the state map.")
 
-st.subheader("Top Segments")
+st.subheader("Top Segments (Uttar Pradesh)")
 row1_a, row1_b = st.columns(2)
 with row1_a:
     st.write("Top Districts (Top 10)")
@@ -415,31 +498,109 @@ with row2_b:
     top_crops = top_crops.rename(columns={"Crop": "label"}).sort_values("count", ascending=False)
     render_ordered_bar(top_crops)
 
-st.subheader("Query Drilldown")
-tab1, tab2 = st.tabs(["Top Query Texts", "Raw Samples"])
-with tab1:
-    st.caption("Query text grouped by (Top 50)")
-    top_queries = get_top_query_texts(lf_filtered, limit=50)
+st.subheader("Query Drilldown (Uttar Pradesh)")
+st.caption("Top normalized query texts (All)")
+left, right = st.columns([1.2, 1])
+with left:
+    top_queries = get_top_query_texts(lf_filtered, limit=None)
     if top_queries.empty:
         st.info("No query text available for the current filters.")
+        selected_text = None
     else:
-        st.dataframe(top_queries, use_container_width=True, height=420)
+        total_rows = len(top_queries)
+        nav_left, nav_right = st.columns([1, 1])
+        with nav_left:
+            page_size = st.selectbox("Rows per page", [25, 50, 100, 200, 500], index=1, key="topq_page_size")
+        total_pages = max((total_rows - 1) // page_size + 1, 1)
+        with nav_right:
+            page = st.selectbox("Page", list(range(1, total_pages + 1)), index=0, key="topq_page")
+        start = (page - 1) * page_size
+        end = min(start + page_size, total_rows)
+        page_df = top_queries.iloc[start:end].reset_index(drop=True)
+        table_key = "top_queries_table"
+        st.session_state["topq_page_df"] = page_df
+        st.session_state["topq_page_idx"] = page
 
-with tab2:
-    st.caption("Representative query/answer samples with context")
-    samples = get_samples(lf_filtered)
-    if samples.empty:
-        st.info("No sample rows available for this query type.")
+        def _handle_topq_select():
+            table_state = st.session_state.get(table_key, {})
+            rows = table_state.get("selection", {}).get("rows", [])
+            selected = None
+            if rows:
+                idx = rows[0]
+                df = st.session_state.get("topq_page_df")
+                if df is not None and 0 <= idx < len(df):
+                    selected = str(df.iloc[idx]["QueryText"])
+            st.session_state["topq_selected_text"] = selected
+
+        st.dataframe(
+            page_df,
+            use_container_width=True,
+            height=520,
+            on_select=_handle_topq_select,
+            selection_mode="single-row",
+            key=table_key,
+        )
+        if st.session_state.get("topq_page_idx") != page:
+            st.session_state["topq_selected_text"] = None
+        selected_text = st.session_state.get("topq_selected_text")
+
+with right:
+    st.caption("Query + Answer samples (selected group)")
+    if not selected_text:
+        st.info("Select a row on the left to see samples.")
     else:
-        for i, row in samples.iterrows():
-            meta = (
-                f"{row.get('StateName', 'NA')} | {row.get('DistrictName', 'NA')} | "
-                f"Crop: {row.get('Crop', 'NA')} | QueryType: {row.get('QueryType', 'NA')} | "
-                f"Month: {row.get('Month', 'NA')}"
-            )
-            st.markdown(f"<span style='color:{ACCENT_SOFT}; font-weight:700;'>{meta}</span>", unsafe_allow_html=True)
-            st.markdown(f"- Query: {str(row.get('QueryText', '')).strip()[:400]}")
-            ans = str(row.get("KccAns", "")).strip()
-            if ans:
-                st.markdown(f"- Answer: {ans[:400]}")
+        with st.spinner("Loading samples..."):
+            samples = get_group_samples(lf_filtered, str(selected_text), limit=25)
+        if samples.empty:
+            st.info("No samples found for this group.")
+        else:
+            for _, row in samples.iterrows():
+                q = str(row.get("QueryText", "")).strip()
+                a = str(row.get("KccAns", "")).strip()
+                st.markdown(f"- Query: {q[:400]}")
+                if a:
+                    st.markdown(f"- Answer: {a[:400]}")
+                st.markdown("---")
+
+st.subheader("Descriptive Answers (Uttar Pradesh)")
+st.caption("Intent clusters with representative/descriptive questions and best answers (precomputed)")
+
+intent_path = BASE_DIR / "data" / "derived" / "kcc_intent_summaries.parquet"
+intent_df = load_intent_summaries(intent_path)
+if intent_df.empty:
+    st.info("Run scripts/build_intent_clusters.py to generate intent summaries.")
+else:
+    left_i, right_i = st.columns([1.2, 1])
+    with left_i:
+        table_key = "intent_summary_table"
+        table = st.dataframe(
+            intent_df[["question_cluster_id", "rep_question", "desc_question"]],
+            use_container_width=True,
+            height=520,
+            on_select="rerun",
+            selection_mode="single-row",
+            key=table_key,
+        )
+        rows = getattr(table, "selection", None).rows if table is not None else []
+        selected_row = rows[0] if rows else None
+    with right_i:
+        if selected_row is None:
+            st.info("Select an intent row to see best answers.")
+        else:
+            row = intent_df.iloc[selected_row]
+            st.markdown(f"**Representative Q:** {row.get('rep_question', '')}")
+            st.markdown(f"**Descriptive Q:** {row.get('desc_question', '')}")
             st.markdown("---")
+            st.markdown("**Best Answer (overall):**")
+            st.markdown(str(row.get("best_answer_overall", ""))[:800])
+            st.markdown("---")
+            st.markdown("**Best Answers (per answer cluster):**")
+            try:
+                per_cluster = json.loads(row.get("best_answer_per_answer_cluster", "[]"))
+            except Exception:
+                per_cluster = []
+            if not per_cluster:
+                st.info("No per-cluster answers available.")
+            else:
+                for item in per_cluster:
+                    st.markdown(f"- Cluster {item.get('answer_cluster_id')}: {str(item.get('KccAns', ''))[:800]}")
